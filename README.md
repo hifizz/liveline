@@ -1,5 +1,11 @@
 # Liveline
 
+> ✅ This repository now also ships a native **Swift Package**: `LivelineCanvas` (iOS/macCatalyst).
+>
+> - Swift sources: `Sources/LivelineCanvas`
+> - Package manifest: `Package.swift`
+> - Focus: Canvas-equivalent rendering core (line/candle/grid/crosshair/reference/loading), without React glue layer.
+
 Real-time animated charts for React. Line, multi-series, and candlestick modes, canvas-rendered, 60fps, zero CSS imports.
 
 ## Install
@@ -288,3 +294,17 @@ No CSS imports. No external dependencies beyond React.
 © 2026 Benji Taylor
 
 Licensed under MIT
+
+## Swift Package (iOS)
+
+```swift
+import LivelineCanvas
+
+let chart = LivelineCanvasView(frame: .zero)
+chart.config = LivelineConfig(mode: .line, windowSeconds: 300)
+chart.points = streamPoints
+chart.liveValue = streamPoints.last?.value ?? 0
+chart.referenceLine = LivelineReferenceLine(value: 100)
+```
+
+For SwiftUI, use `LivelineChart(...)` from the same package.
