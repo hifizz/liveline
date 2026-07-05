@@ -56,6 +56,40 @@ public struct LivelineInsets: Sendable, Equatable {
     }
 }
 
+/// Burst particles + chart shake on momentum swings (React `degen` prop).
+public struct LivelineDegenOptions: Sendable, Equatable {
+    /// Particle count/size multiplier.
+    public var scale: Double
+    /// Also fire on downward swings (off by default, like the web).
+    public var downMomentum: Bool
+
+    public init(scale: Double = 1, downMomentum: Bool = false) {
+        self.scale = scale
+        self.downMomentum = downMomentum
+    }
+}
+
+public struct LivelineOrderbookLevel: Sendable, Equatable {
+    public let price: Double
+    public let size: Double
+
+    public init(price: Double, size: Double) {
+        self.price = price
+        self.size = size
+    }
+}
+
+/// Bid/ask depth stream for the rising orderbook labels.
+public struct LivelineOrderbook: Sendable, Equatable {
+    public var bids: [LivelineOrderbookLevel]
+    public var asks: [LivelineOrderbookLevel]
+
+    public init(bids: [LivelineOrderbookLevel], asks: [LivelineOrderbookLevel]) {
+        self.bids = bids
+        self.asks = asks
+    }
+}
+
 public enum LivelineBadgeVariant: Sendable {
     /// Accent/momentum-colored pill with white text.
     case `default`
@@ -89,6 +123,8 @@ public struct LivelineConfig: Sendable {
     public var badgeTail: Bool
     /// Momentum styling: dot glow, chevron arrows, badge color.
     public var momentum: LivelineMomentumMode
+    /// Burst particles + chart shake on momentum swings.
+    public var degen: LivelineDegenOptions?
     /// Tight Y-range so small moves fill the chart height.
     public var exaggerate: Bool
     public var lineWidth: Double
@@ -115,6 +151,7 @@ public struct LivelineConfig: Sendable {
         badgeVariant: LivelineBadgeVariant = .default,
         badgeTail: Bool = true,
         momentum: LivelineMomentumMode = .auto,
+        degen: LivelineDegenOptions? = nil,
         exaggerate: Bool = false,
         lineWidth: Double = 2,
         candleWidthSeconds: TimeInterval = 60,
@@ -138,6 +175,7 @@ public struct LivelineConfig: Sendable {
         self.badgeVariant = badgeVariant
         self.badgeTail = badgeTail
         self.momentum = momentum
+        self.degen = degen
         self.exaggerate = exaggerate
         self.lineWidth = lineWidth
         self.candleWidthSeconds = candleWidthSeconds

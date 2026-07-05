@@ -34,14 +34,36 @@ struct RenderState {
 
     var seriesAlphas: [String: Double] = [:]
     var seriesValues: [String: Double] = [:]
+
+    /// 0 → 1 after loading flips off; drives the loading→data reveal morph.
+    var chartReveal: Double = 1
+
+    var particles: [DegenParticle] = []
+    var particleCooldown: Double = 0
+    var burstCount = 0
+    var shakeAmplitude: Double = 0
+
+    var liveCandleTime: TimeInterval = -1
+    var liveCandleAlpha: Double = 0
+    var liveCandleSmooth: (open: Double, high: Double, low: Double, close: Double)?
+    var closeLineSmooth: Double?
+
+    var obLabels: [OrderbookLabel] = []
+    var obSpawnTimer: Double = 0
+    var obSpeed: Double = 0
+    var obPrevBidTotal: Double = 0
+    var obPrevAskTotal: Double = 0
+    var obChurnRate: Double = 0
 }
 
 struct RenderInput {
     let rect: CGRect
     let points: [LivelinePoint]
     let candles: [CandlePoint]
+    let liveCandle: CandlePoint?
     let series: [LivelineSeries]
     let hiddenSeriesIDs: Set<String>
+    let orderbook: LivelineOrderbook?
     let value: Double
     let config: LivelineConfig
     let palette: LivelinePalette
@@ -70,6 +92,8 @@ enum LivelineRenderer {
         guard chartRect.width > 0, chartRect.height > 0 else { return }
 
         guard !input.isLoading else {
+            // Next data frame morphs out of this squiggly
+            state.chartReveal = 0
             drawSquiggly(in: ctx, chartRect: chartRect, palette: palette, now: input.now)
             return
         }
@@ -82,6 +106,27 @@ enum LivelineRenderer {
             drawEmpty(in: ctx, chartRect: chartRect, config: config, palette: palette, now: input.now)
             return
         }
+
+        // --- Loading→data reveal (CHART_REVEAL_SPEED_FWD = 0.09) ---
+        if state.chartReveal < 1 {
+            state.chartReveal = lerp(state.chartReveal, 1, speed: 0.09, dt: dt)
+            if state.chartReveal > 0.995 { state.chartReveal = 1 }
+        }
+        let reveal = state.chartReveal
+
+        // --- Degen shake: random translate, exponential decay ---
+        var shakeApplied = false
+        if state.shakeAmplitude > 0.2, reveal > 0.9 {
+            ctx.saveGState()
+            ctx.translateBy(
+                x: CGFloat(Double.random(in: -1...1) * state.shakeAmplitude),
+                y: CGFloat(Double.random(in: -1...1) * state.shakeAmplitude)
+            )
+            shakeApplied = true
+        }
+        state.shakeAmplitude *= exp(-0.002 * dt * 1000)
+        if state.shakeAmplitude < 0.2 { state.shakeAmplitude = 0 }
+        defer { if shakeApplied { ctx.restoreGState() } }
 
         // --- Pause: decelerate into a frozen clock, catch up on resume ---
         state.pauseProgress = lerp(state.pauseProgress, input.isPaused ? 1 : 0, speed: 0.12, dt: dt)
@@ -138,9 +183,10 @@ enum LivelineRenderer {
             }
             range = uMin.isFinite ? (uMin, uMax) : (0, 1)
         } else {
+            let rangeCandles = input.liveCandle.map { visibleCandles + [$0] } ?? visibleCandles
             range = valueRange(
                 points: config.mode == .line ? visiblePoints : [],
-                candles: config.mode == .candle ? visibleCandles : [],
+                candles: config.mode == .candle ? rangeCandles : [],
                 currentValue: input.value,
                 reference: input.referenceLine,
                 exaggerate: config.exaggerate
@@ -187,8 +233,8 @@ enum LivelineRenderer {
         } else {
             switch config.mode {
             case .line:
-                drawLine(in: ctx, chartRect: chartRect, points: visiblePoints, smoothValue: state.displayValue, tipTime: now, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
-                if !visiblePoints.isEmpty {
+                drawLine(in: ctx, chartRect: chartRect, points: visiblePoints, smoothValue: state.displayValue, tipTime: now, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette, reveal: reveal, animNow: input.now)
+                if !visiblePoints.isEmpty, reveal > 0.5 {
                     let tipX = xForTime(now, rightEdgeTime: rightEdgeTime, window: window, chartRect: chartRect)
                     let tipY = yForValue(state.displayValue, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
                     let dot = CGPoint(x: tipX, y: clamp(tipY, rect.minY + 10, rect.maxY - 10))
@@ -202,10 +248,27 @@ enum LivelineRenderer {
                     if showBadge {
                         drawBadge(in: ctx, rect: rect, chartRect: chartRect, value: state.displayValue, valueY: tipY, momentum: momentum, config: config, palette: palette, state: &state, dt: dt)
                     }
+                    if let degen = config.degen {
+                        let swing = swingMagnitude(points: visiblePoints, span: maxValue - minValue)
+                        let intensity = spawnParticles(state: &state, momentum: momentum, dot: dot, swing: swing, dt: dt, options: degen)
+                        if intensity > 0 {
+                            state.shakeAmplitude = (3 + swing * 4) * intensity
+                        }
+                        drawParticles(in: ctx, state: &state, color: palette.line, dt: dt)
+                    }
                 }
             case .candle:
-                drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
+                drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, liveCandle: input.liveCandle, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette, state: &state, dt: pausedDt, animNow: input.now)
             }
+        }
+
+        // Left-edge fade so the line dissolves into the chart edge
+        drawEdgeFade(in: ctx, chartRect: chartRect, background: palette.background)
+
+        if let orderbook = input.orderbook {
+            let swingPoints = isMulti ? (input.series.first?.data ?? []) : input.points
+            let swing = swingMagnitude(points: swingPoints, span: maxValue - minValue)
+            drawOrderbook(in: ctx, chartRect: chartRect, orderbook: orderbook, swing: swing, palette: palette, state: &state, dt: dt)
         }
 
         if let hoverX = input.hoverX, config.showCrosshair {
@@ -437,14 +500,44 @@ enum LivelineRenderer {
         ctx.strokePath()
     }
 
-    static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], smoothValue: Double, tipTime: TimeInterval, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
-        let pts = linePoints(points, smoothValue: smoothValue, tipTime: tipTime, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+    static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], smoothValue: Double, tipTime: TimeInterval, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, reveal: Double = 1, animNow: TimeInterval = 0) {
+        var pts = linePoints(points, smoothValue: smoothValue, tipTime: tipTime, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
         guard pts.count >= 2 else { return }
+
+        let ms = animNow.truncatingRemainder(dividingBy: 86_400) * 1000
+        var lineAlpha = 1.0
+        var fillAlpha = 1.0
+        var strokeColor = palette.line
+
+        if reveal < 1 {
+            // Morph out of the loading squiggly, center-out: the middle of
+            // the chart resolves first, edges last (src/draw/line.ts)
+            let centerY = Double(chartRect.midY)
+            let amplitude = Double(chartRect.height) * 0.07
+            let scroll = ms * 0.001
+            for i in pts.indices {
+                let t = clamp(Double((pts[i].x - chartRect.minX) / Swift.max(chartRect.width, 1)), 0, 1)
+                let centerDist = abs(t - 0.5) * 2
+                let localReveal = clamp((reveal - centerDist * 0.4) / 0.6, 0, 1)
+                let baseY = loadingY(t: t, centerY: centerY, amplitude: amplitude, scroll: scroll)
+                pts[i].y = CGFloat(baseY + (Double(pts[i].y) - baseY) * localReveal)
+            }
+            // Tip X extends to the full width at reveal=0, matching the squiggly
+            let tip = pts[pts.count - 1]
+            pts[pts.count - 1].x = tip.x + (chartRect.maxX - tip.x) * CGFloat(1 - reveal)
+
+            // Line shares the loading breath at reveal=0, ramps to full;
+            // color blends grey → accent by reveal ≈ 0.3
+            let breath = 0.22 + 0.08 * sin(ms / 1200 * .pi)
+            lineAlpha = breath + (1 - breath) * reveal
+            fillAlpha = reveal
+            strokeColor = blendColor(palette.gridLabel, palette.line, t: Swift.min(1, reveal * 3))
+        }
 
         ctx.saveGState()
         ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
 
-        if config.showFill {
+        if config.showFill, fillAlpha > 0.01 {
             let fillPath = CGMutablePath()
             fillPath.move(to: pts[0])
             for segment in monotoneSplineSegments(pts) {
@@ -461,7 +554,10 @@ enum LivelineRenderer {
             var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
             _ = palette.fillTop.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
             _ = palette.fillBottom.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
-            let components: [CGFloat] = [r1, g1, b1, a1, r2, g2, b2, a2]
+            let components: [CGFloat] = [
+                r1, g1, b1, a1 * CGFloat(fillAlpha),
+                r2, g2, b2, a2 * CGFloat(fillAlpha)
+            ]
             if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) {
                 ctx.drawLinearGradient(
                     gradient,
@@ -473,23 +569,67 @@ enum LivelineRenderer {
             ctx.restoreGState()
         }
 
-        strokeSpline(ctx, points: pts, color: palette.line, lineWidth: CGFloat(config.lineWidth))
+        strokeSpline(ctx, points: pts, color: scaledAlpha(strokeColor, lineAlpha), lineWidth: CGFloat(config.lineWidth))
         ctx.restoreGState()
 
         if config.showDashLine {
-            let tipY = clamp(
+            let realY = clamp(
                 yForValue(smoothValue, minValue: minValue, maxValue: maxValue, chartRect: chartRect),
                 chartRect.minY, chartRect.maxY
             )
+            // During reveal the dash line unfolds from the vertical center
+            let y = reveal < 1 ? chartRect.midY + (realY - chartRect.midY) * CGFloat(reveal) : realY
             ctx.saveGState()
-            ctx.setStrokeColor(palette.dashLine.cgColor)
+            ctx.setStrokeColor(scaledAlpha(palette.dashLine, reveal).cgColor)
             ctx.setLineWidth(1)
             ctx.setLineDash(phase: 0, lengths: [4, 4])
-            ctx.move(to: CGPoint(x: chartRect.minX, y: tipY))
-            ctx.addLine(to: CGPoint(x: chartRect.maxX, y: tipY))
+            ctx.move(to: CGPoint(x: chartRect.minX, y: y))
+            ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
             ctx.strokePath()
             ctx.restoreGState()
         }
+    }
+
+    /// Fade the line/fill into the left chart edge over 40px — stands in for
+    /// the destination-out gradient the web version uses (FADE_EDGE_WIDTH).
+    static func drawEdgeFade(in ctx: CGContext, chartRect: CGRect, background: UIColor) {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        _ = background.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let components: [CGFloat] = [r, g, b, 1, r, g, b, 0]
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) else { return }
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: chartRect.minX, y: chartRect.minY, width: 40, height: chartRect.height))
+        ctx.drawLinearGradient(
+            gradient,
+            start: CGPoint(x: chartRect.minX, y: 0),
+            end: CGPoint(x: chartRect.minX + 40, y: 0),
+            options: []
+        )
+        ctx.restoreGState()
+    }
+
+    // MARK: - Color helpers
+
+    static func blendColor(_ a: UIColor, _ b: UIColor, t: Double) -> UIColor {
+        let tt = CGFloat(clamp(t, 0, 1))
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        _ = a.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        _ = b.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        return UIColor(
+            red: r1 + (r2 - r1) * tt,
+            green: g1 + (g2 - g1) * tt,
+            blue: b1 + (b2 - b1) * tt,
+            alpha: a1 + (a2 - a1) * tt
+        )
+    }
+
+    /// Multiply a color's existing alpha by `factor` (withAlphaComponent
+    /// would replace it and lose palette alphas like gridLabel's 0.4).
+    static func scaledAlpha(_ color: UIColor, _ factor: Double) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        _ = color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return UIColor(red: r, green: g, blue: b, alpha: a * CGFloat(clamp(factor, 0, 1)))
     }
 
     static func glowColor(for momentum: LivelineMomentum, palette: LivelinePalette) -> UIColor {
@@ -532,24 +672,21 @@ enum LivelineRenderer {
 
     // MARK: - Candle mode
 
-    static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
-        guard !candles.isEmpty else { return }
+    static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], liveCandle: CandlePoint?, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, state: inout RenderState, dt: Double, animNow: TimeInterval) {
+        guard !candles.isEmpty || liveCandle != nil else { return }
         let pxPerSecond = chartRect.width / CGFloat(window)
         let bodyWidth = Swift.max(1, pxPerSecond * CGFloat(config.candleWidthSeconds) * 0.7)
         let wickWidth = clamp(bodyWidth * 0.15, 0.8, 2)
 
-        ctx.saveGState()
-        ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
-        for c in candles {
-            // Candle time is the bucket's open time — center the body on it
-            let x = xForTime(c.time + config.candleWidthSeconds / 2, rightEdgeTime: rightEdgeTime, window: window, chartRect: chartRect)
+        func drawCandle(_ c: CandlePoint, at time: TimeInterval, alpha: Double) {
+            let x = xForTime(time + config.candleWidthSeconds / 2, rightEdgeTime: rightEdgeTime, window: window, chartRect: chartRect)
             let yOpen = yForValue(c.open, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
             let yClose = yForValue(c.close, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
             let yHigh = yForValue(c.high, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
             let yLow = yForValue(c.low, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
 
             let isUp = c.close >= c.open
-            let color = isUp ? palette.upCandle : palette.downCandle
+            let color = (isUp ? palette.upCandle : palette.downCandle).withAlphaComponent(CGFloat(alpha))
 
             ctx.setStrokeColor(color.cgColor)
             ctx.setLineWidth(wickWidth)
@@ -568,15 +705,53 @@ enum LivelineRenderer {
             ctx.setFillColor(color.cgColor)
             ctx.fill(bodyRect)
         }
+
+        ctx.saveGState()
+        ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
+        // Candle time is the bucket's open time — bodies are centered on it
+        for c in candles {
+            drawCandle(c, at: c.time, alpha: 1)
+        }
+
+        // Live candle: birth fade-in, lerped OHLC, pulsing glow
+        var closeSource: CandlePoint? = candles.last
+        if let live = liveCandle {
+            if state.liveCandleTime != live.time {
+                state.liveCandleTime = live.time
+                state.liveCandleAlpha = 0
+                state.liveCandleSmooth = (live.open, live.high, live.low, live.close)
+            }
+            state.liveCandleAlpha = lerp(state.liveCandleAlpha, 1, speed: 0.12, dt: dt)
+            var smooth = state.liveCandleSmooth ?? (live.open, live.high, live.low, live.close)
+            smooth.open = lerp(smooth.open, live.open, speed: 0.25, dt: dt)
+            smooth.high = lerp(smooth.high, live.high, speed: 0.25, dt: dt)
+            smooth.low = lerp(smooth.low, live.low, speed: 0.25, dt: dt)
+            smooth.close = lerp(smooth.close, live.close, speed: 0.25, dt: dt)
+            state.liveCandleSmooth = smooth
+
+            let display = CandlePoint(time: live.time, open: smooth.open, high: smooth.high, low: smooth.low, close: smooth.close)
+            let ms = animNow.truncatingRemainder(dividingBy: 86_400) * 1000
+            let glowAlpha = 0.12 + sin(ms * 0.004) * 0.08
+            let glowBase = display.close >= display.open ? palette.upCandle : palette.downCandle
+
+            ctx.saveGState()
+            ctx.setShadow(offset: .zero, blur: 8, color: glowBase.withAlphaComponent(CGFloat(Swift.max(0, glowAlpha))).cgColor)
+            drawCandle(display, at: live.time, alpha: state.liveCandleAlpha)
+            ctx.restoreGState()
+
+            closeSource = display
+        }
         ctx.restoreGState()
 
-        // Dashed close-price line at the latest close (candle-colored)
-        if config.showDashLine, let last = candles.last {
+        // Dashed close-price line, smoothed so it never jumps on candle birth
+        if config.showDashLine, let source = closeSource {
+            let smoothClose = lerp(state.closeLineSmooth ?? source.close, source.close, speed: 0.25, dt: dt)
+            state.closeLineSmooth = smoothClose
             let y = clamp(
-                yForValue(last.close, minValue: minValue, maxValue: maxValue, chartRect: chartRect),
+                yForValue(smoothClose, minValue: minValue, maxValue: maxValue, chartRect: chartRect),
                 chartRect.minY, chartRect.maxY
             )
-            let color = last.close >= last.open ? palette.upCandle : palette.downCandle
+            let color = source.close >= source.open ? palette.upCandle : palette.downCandle
             ctx.saveGState()
             ctx.setStrokeColor(color.withAlphaComponent(0.4).cgColor)
             ctx.setLineWidth(1)
@@ -639,7 +814,17 @@ enum LivelineRenderer {
 
     // MARK: - Loading / empty
 
-    /// Breathing squiggly line, same shape constants as src/draw/loadingShape.ts.
+    /// Squiggly Y position shared by the loading line and the reveal morph —
+    /// same shape constants as src/draw/loadingShape.ts.
+    static func loadingY(t: Double, centerY: Double, amplitude: Double, scroll: Double) -> Double {
+        centerY + amplitude * (
+            sin(t * 9.4 + scroll) * 0.55 +
+            sin(t * 15.7 + scroll * 1.3) * 0.3 +
+            sin(t * 4.2 + scroll * 0.7) * 0.15
+        )
+    }
+
+    /// Breathing squiggly loading line.
     static func drawSquiggly(in ctx: CGContext, chartRect: CGRect, palette: LivelinePalette, now: TimeInterval, alphaScale: Double = 1) {
         // Keep the sine arguments small for precision — the shape repeats anyway
         let ms = now.truncatingRemainder(dividingBy: 86_400) * 1000
@@ -653,11 +838,7 @@ enum LivelineRenderer {
         pts.reserveCapacity(samples + 1)
         for i in 0...samples {
             let t = Double(i) / Double(samples)
-            let y = centerY + amplitude * (
-                sin(t * 9.4 + scroll) * 0.55 +
-                sin(t * 15.7 + scroll * 1.3) * 0.3 +
-                sin(t * 4.2 + scroll * 0.7) * 0.15
-            )
+            let y = loadingY(t: t, centerY: centerY, amplitude: amplitude, scroll: scroll)
             pts.append(CGPoint(x: chartRect.minX + CGFloat(t) * chartRect.width, y: CGFloat(y)))
         }
 

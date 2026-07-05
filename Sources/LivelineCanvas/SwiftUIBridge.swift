@@ -6,8 +6,10 @@ import SwiftUI
 public struct LivelineChart: UIViewRepresentable {
     public var points: [LivelinePoint]
     public var candles: [CandlePoint]
+    public var liveCandle: CandlePoint?
     public var series: [LivelineSeries]
     public var hiddenSeriesIDs: Set<String>
+    public var orderbook: LivelineOrderbook?
     public var value: Double
     public var config: LivelineConfig
     public var palette: LivelinePalette
@@ -19,8 +21,10 @@ public struct LivelineChart: UIViewRepresentable {
     public init(
         points: [LivelinePoint],
         candles: [CandlePoint] = [],
+        liveCandle: CandlePoint? = nil,
         series: [LivelineSeries] = [],
         hiddenSeriesIDs: Set<String> = [],
+        orderbook: LivelineOrderbook? = nil,
         value: Double,
         config: LivelineConfig = .init(),
         palette: LivelinePalette = .default,
@@ -31,8 +35,10 @@ public struct LivelineChart: UIViewRepresentable {
     ) {
         self.points = points
         self.candles = candles
+        self.liveCandle = liveCandle
         self.series = series
         self.hiddenSeriesIDs = hiddenSeriesIDs
+        self.orderbook = orderbook
         self.value = value
         self.config = config
         self.palette = palette
@@ -51,8 +57,10 @@ public struct LivelineChart: UIViewRepresentable {
         uiView.palette = palette
         uiView.points = points
         uiView.candles = candles
+        uiView.liveCandle = liveCandle
         uiView.series = series
         uiView.hiddenSeriesIDs = hiddenSeriesIDs
+        uiView.orderbook = orderbook
         uiView.liveValue = value
         uiView.referenceLine = referenceLine
         uiView.isLoading = loading

@@ -35,6 +35,16 @@ public final class LivelineCanvasView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    /// Current in-progress candle, updated every tick (React `liveCandle`).
+    public var liveCandle: CandlePoint? {
+        didSet { setNeedsDisplay() }
+    }
+
+    /// Bid/ask depth stream for the rising orderbook labels.
+    public var orderbook: LivelineOrderbook? {
+        didSet { setNeedsDisplay() }
+    }
+
     /// Multi-series mode: when non-empty, overrides `points`/`liveValue`
     /// and disables badge/momentum/fill, like the React `series` prop.
     public var series: [LivelineSeries] = [] {
@@ -137,8 +147,10 @@ public final class LivelineCanvasView: UIView {
                 rect: bounds,
                 points: points,
                 candles: candles,
+                liveCandle: liveCandle,
                 series: series,
                 hiddenSeriesIDs: hiddenSeriesIDs,
+                orderbook: orderbook,
                 value: liveValue,
                 config: config,
                 palette: palette,
