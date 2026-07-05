@@ -3,6 +3,21 @@ import Foundation
 #if canImport(UIKit)
 import UIKit
 
+/// CADisplayLink retains its target — pointing it at the view directly would
+/// keep the view alive forever (deinit never runs, the link never stops).
+/// This weak proxy breaks the cycle.
+private final class DisplayLinkProxy: NSObject {
+    weak var view: LivelineCanvasView?
+
+    init(view: LivelineCanvasView) {
+        self.view = view
+    }
+
+    @objc func tick(_ link: CADisplayLink) {
+        view?.displayLinkFired()
+    }
+}
+
 public final class LivelineCanvasView: UIView {
     public var config: LivelineConfig {
         didSet { setNeedsDisplay() }
@@ -64,6 +79,7 @@ public final class LivelineCanvasView: UIView {
     private func commonInit() {
         isOpaque = true
         contentMode = .redraw
+
         let pan = UIPanGestureRecognizer(target: self, action: #selector(onPan(_:)))
         pan.maximumNumberOfTouches = 1
         addGestureRecognizer(pan)
@@ -72,9 +88,24 @@ public final class LivelineCanvasView: UIView {
         longPress.minimumPressDuration = 0.2
         addGestureRecognizer(longPress)
 
-        let link = CADisplayLink(target: self, selector: #selector(tick(_:)))
+        let link = CADisplayLink(target: DisplayLinkProxy(view: self), selector: #selector(DisplayLinkProxy.tick(_:)))
         link.add(to: .main, forMode: .common)
         displayLink = link
+    }
+
+    /// Stop the render loop while detached from a window — the equivalent of
+    /// the web version pausing requestAnimationFrame on a hidden tab.
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        displayLink?.isPaused = window == nil
+        if window != nil {
+            lastTimestamp = nil
+            setNeedsDisplay()
+        }
+    }
+
+    fileprivate func displayLinkFired() {
+        setNeedsDisplay()
     }
 
     public override func draw(_ rect: CGRect) {
@@ -106,10 +137,6 @@ public final class LivelineCanvasView: UIView {
             state: &state,
             dt: dt
         )
-    }
-
-    @objc private func tick(_ sender: CADisplayLink) {
-        setNeedsDisplay()
     }
 
     @objc private func onPan(_ gesture: UIPanGestureRecognizer) {
@@ -146,11 +173,13 @@ public final class LivelineCanvasView: UIView {
             bottom: CGFloat(config.insets.bottom),
             right: CGFloat(config.insets.right)
         ))
+        guard chartRect.width > 0 else { return }
 
-        let ratio = clamp((x - chartRect.minX) / max(1, chartRect.width), 0, 1)
-        guard let newest = points.last?.time else { return }
-        let oldest = newest - config.windowSeconds
-        let targetTime = oldest + TimeInterval(ratio) * config.windowSeconds
+        // Same time mapping as the renderer: the right edge is "now"
+        // (frozen while paused), not the newest data point.
+        let now = state.pausedAt ?? Date().timeIntervalSince1970
+        let ratio = clamp((x - chartRect.minX) / chartRect.width, 0, 1)
+        let targetTime = (now - config.windowSeconds) + TimeInterval(ratio) * config.windowSeconds
 
         let nearest = points.min { abs($0.time - targetTime) < abs($1.time - targetTime) }
         onHover?(nearest)

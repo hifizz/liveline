@@ -1,10 +1,6 @@
 # Liveline
 
-> ✅ This repository now also ships a native **Swift Package**: `LivelineCanvas` (iOS/macCatalyst).
->
-> - Swift sources: `Sources/LivelineCanvas`
-> - Package manifest: `Package.swift`
-> - Focus: Canvas-equivalent rendering core (line/candle/grid/crosshair/reference/loading), without React glue layer.
+> This repository also ships a native **Swift Package**: `LivelineCanvas` (iOS 15+/macCatalyst), a **partial port** of the canvas rendering core. See [Swift Package (iOS)](#swift-package-ios) for what is and isn't covered.
 
 Real-time animated charts for React. Line, multi-series, and candlestick modes, canvas-rendered, 60fps, zero CSS imports.
 
@@ -297,6 +293,8 @@ Licensed under MIT
 
 ## Swift Package (iOS)
 
+`LivelineCanvas` is a native UIKit/SwiftUI port of the rendering core (iOS 15+, macCatalyst). Sources live in `Sources/LivelineCanvas`, manifest in `Package.swift`.
+
 ```swift
 import LivelineCanvas
 
@@ -307,4 +305,10 @@ chart.liveValue = streamPoints.last?.value ?? 0
 chart.referenceLine = LivelineReferenceLine(value: 100)
 ```
 
-For SwiftUI, use `LivelineChart(...)` from the same package.
+For SwiftUI, use `LivelineChart(...)` from the same package. Palettes can be derived from an accent color like the web version: `LivelinePalette.derive(accent: .systemBlue, theme: .dark)`.
+
+### Feature coverage vs. the React component
+
+Implemented: line mode with Fritsch-Carlson monotone spline, gradient fill, live-tip value interpolation, live dot with pulse ring, dashed current-value line, window-based scrolling (`windowSeconds`), frame-rate-independent lerp of value and Y-range, Y-range from visible data with the same margins (incl. `exaggerate`), grid with value labels, time axis with nice intervals, crosshair with value/time tooltip via pan or long-press, candlestick mode with wicks and dashed close line, reference line, `formatValue`, loading squiggly with breathing alpha, empty state, pause (freezes the clock), render loop that stops when the view leaves the window.
+
+Not (yet) ported: multi-series, badge pill, momentum detection/arrows, degen particles + shake, orderbook labels, line/candle morph + live candle animation, window-change transition, loading→data reveal morph, pause catch-up animation, left-edge fade, built-in window/mode/series toggle controls (build these in SwiftUI/UIKit around the view).

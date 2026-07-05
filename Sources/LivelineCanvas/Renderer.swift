@@ -9,6 +9,10 @@ struct RenderState {
     var displayMin: Double = 0
     var displayMax: Double = 1
     var initialized = false
+    /// Wall-clock time captured when `isPaused` flipped on; while set, the
+    /// chart clock is frozen so scrolling stops. (The React engine also
+    /// animates a smooth catch-up on resume; that part is not ported.)
+    var pausedAt: TimeInterval?
 }
 
 struct RenderInput {
@@ -28,163 +32,405 @@ struct RenderInput {
 enum LivelineRenderer {
     static func render(_ ctx: CGContext, input: RenderInput, state: inout RenderState, dt: Double) {
         let rect = input.rect
-        ctx.setFillColor(input.palette.background.cgColor)
+        let config = input.config
+        let palette = input.palette
+
+        ctx.setFillColor(palette.background.cgColor)
         ctx.fill(rect)
 
+        let chartRect = rect.inset(by: UIEdgeInsets(
+            top: CGFloat(config.insets.top),
+            left: CGFloat(config.insets.left),
+            bottom: CGFloat(config.insets.bottom),
+            right: CGFloat(config.insets.right)
+        ))
+        guard chartRect.width > 0, chartRect.height > 0 else { return }
+
         guard !input.isLoading else {
-            drawLoading(in: ctx, rect: rect, palette: input.palette, t: input.now)
+            drawSquiggly(in: ctx, chartRect: chartRect, palette: palette, now: input.now)
             return
         }
 
-        let chartRect = rect.inset(by: UIEdgeInsets(
-            top: CGFloat(input.config.insets.top),
-            left: CGFloat(input.config.insets.left),
-            bottom: CGFloat(input.config.insets.bottom),
-            right: CGFloat(input.config.insets.right)
-        ))
-
-        if input.config.showGrid {
-            drawGrid(in: ctx, rect: chartRect, color: input.palette.grid)
+        guard !(input.points.isEmpty && input.candles.isEmpty) else {
+            drawEmpty(in: ctx, chartRect: chartRect, config: config, palette: palette, now: input.now)
+            return
         }
 
-        let range = valueRange(points: input.points, candles: input.candles, reference: input.referenceLine)
+        // Freeze the chart clock while paused so scrolling stops.
+        if input.isPaused {
+            if state.pausedAt == nil { state.pausedAt = input.now }
+        } else {
+            state.pausedAt = nil
+        }
+        let now = state.pausedAt ?? input.now
+
+        let window = Swift.max(config.windowSeconds, 1)
+        let visiblePoints = visibleSlice(input.points, leftTime: now - window)
+        let visibleCandles = input.candles.filter { $0.time >= now - window - config.candleWidthSeconds }
+
+        let range = valueRange(
+            points: config.mode == .line ? visiblePoints : [],
+            candles: config.mode == .candle ? visibleCandles : [],
+            currentValue: input.value,
+            reference: input.referenceLine,
+            exaggerate: config.exaggerate
+        )
         if !state.initialized {
             state.displayValue = input.value
             state.displayMin = range.min
             state.displayMax = range.max
             state.initialized = true
         } else if !input.isPaused {
-            state.displayValue = lerp(state.displayValue, input.value, speed: input.config.lerpSpeed, dt: dt)
-            state.displayMin = lerp(state.displayMin, range.min, speed: input.config.lerpSpeed, dt: dt)
-            state.displayMax = lerp(state.displayMax, range.max, speed: input.config.lerpSpeed, dt: dt)
+            state.displayValue = lerp(state.displayValue, input.value, speed: config.lerpSpeed, dt: dt)
+            state.displayMin = lerp(state.displayMin, range.min, speed: config.lerpSpeed + 0.07, dt: dt)
+            state.displayMax = lerp(state.displayMax, range.max, speed: config.lerpSpeed + 0.07, dt: dt)
         }
+        let minValue = state.displayMin
+        let maxValue = state.displayMax
+
+        if config.showGrid {
+            drawGrid(in: ctx, chartRect: chartRect, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
+        }
+        drawTimeAxis(in: ctx, chartRect: chartRect, now: now, window: window, palette: palette)
 
         if let reference = input.referenceLine {
-            drawReferenceLine(in: ctx, chartRect: chartRect, min: state.displayMin, max: state.displayMax, value: reference.value, color: input.palette.reference)
+            drawReferenceLine(in: ctx, chartRect: chartRect, minValue: minValue, maxValue: maxValue, value: reference.value, color: palette.reference)
         }
 
-        let visiblePoints = input.points.filter { input.now - $0.time <= input.config.windowSeconds }
-        let visibleCandles = input.candles.filter { input.now - $0.time <= input.config.windowSeconds }
-
-        switch input.config.mode {
+        switch config.mode {
         case .line:
-            drawLine(in: ctx, chartRect: chartRect, points: visiblePoints, min: state.displayMin, max: state.displayMax, color: input.palette.line, fill: input.config.showFill ? input.palette.fill : nil)
+            drawLine(in: ctx, chartRect: chartRect, points: visiblePoints, smoothValue: state.displayValue, now: now, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
+            if config.showDot, !visiblePoints.isEmpty {
+                let tipY = yForValue(state.displayValue, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+                // Clamp to the canvas (not the chart area) so the dot stays visible
+                let dotY = clamp(tipY, rect.minY + 10, rect.maxY - 10)
+                drawDot(in: ctx, at: CGPoint(x: chartRect.maxX, y: dotY), palette: palette, pulse: config.pulse, now: input.now)
+            }
         case .candle:
-            drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, min: state.displayMin, max: state.displayMax, palette: input.palette, window: input.config.windowSeconds)
+            drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, now: now, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
         }
 
-        if let hoverX = input.hoverX, input.config.showCrosshair {
-            drawCrosshair(in: ctx, chartRect: chartRect, x: hoverX, color: input.palette.crosshair)
+        if let hoverX = input.hoverX, config.showCrosshair {
+            drawCrosshair(in: ctx, chartRect: chartRect, x: hoverX, points: input.points, now: now, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
         }
 
-        if input.config.showValueLabel {
-            drawValueLabel(in: ctx, rect: rect, value: state.displayValue, color: input.palette.text)
+        if config.showValueLabel {
+            drawText(
+                config.formatValue(state.displayValue),
+                at: CGPoint(x: rect.maxX - 12, y: rect.minY + 8),
+                anchorX: 1,
+                font: .monospacedDigitSystemFont(ofSize: 12, weight: .medium),
+                color: palette.text
+            )
         }
     }
 
-    private static func xForTime(_ t: TimeInterval, rightEdge: TimeInterval, window: TimeInterval, chartRect: CGRect) -> CGFloat {
-        let ratio = CGFloat((t - (rightEdge - window)) / window)
+    // MARK: - Geometry
+
+    /// Points inside the window plus one point just left of it, so the line
+    /// enters from the chart edge instead of popping in.
+    private static func visibleSlice(_ points: [LivelinePoint], leftTime: TimeInterval) -> [LivelinePoint] {
+        guard let firstVisible = points.firstIndex(where: { $0.time >= leftTime }) else {
+            // Everything is older than the window — keep the newest point so
+            // the live tip still has an anchor.
+            return points.suffix(1).map { $0 }
+        }
+        let start = firstVisible > 0 ? firstVisible - 1 : 0
+        return Array(points[start...])
+    }
+
+    private static func xForTime(_ t: TimeInterval, now: TimeInterval, window: TimeInterval, chartRect: CGRect) -> CGFloat {
+        let ratio = CGFloat((t - (now - window)) / window)
         return chartRect.minX + ratio * chartRect.width
     }
 
-    private static func yForValue(_ v: Double, min: Double, max: Double, chartRect: CGRect) -> CGFloat {
-        let ratio = CGFloat((v - min) / (max - min))
+    private static func yForValue(_ v: Double, minValue: Double, maxValue: Double, chartRect: CGRect) -> CGFloat {
+        let span = maxValue - minValue
+        guard span > 0 else { return chartRect.midY }
+        let ratio = CGFloat((v - minValue) / span)
         return chartRect.maxY - ratio * chartRect.height
     }
 
-    private static func drawGrid(in ctx: CGContext, rect: CGRect, color: UIColor) {
-        ctx.saveGState()
-        ctx.setStrokeColor(color.cgColor)
-        ctx.setLineWidth(1)
+    // MARK: - Grid + axes
+
+    private static func drawGrid(in ctx: CGContext, chartRect: CGRect, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
         let rows = 4
-        let cols = 4
+        ctx.saveGState()
+        ctx.setStrokeColor(palette.grid.cgColor)
+        ctx.setLineWidth(1)
+        ctx.setLineDash(phase: 0, lengths: [1, 3])
         for i in 0...rows {
-            let y = rect.minY + (CGFloat(i) / CGFloat(rows)) * rect.height
-            ctx.move(to: CGPoint(x: rect.minX, y: y))
-            ctx.addLine(to: CGPoint(x: rect.maxX, y: y))
-        }
-        for i in 0...cols {
-            let x = rect.minX + (CGFloat(i) / CGFloat(cols)) * rect.width
-            ctx.move(to: CGPoint(x: x, y: rect.minY))
-            ctx.addLine(to: CGPoint(x: x, y: rect.maxY))
+            let y = chartRect.minY + (CGFloat(i) / CGFloat(rows)) * chartRect.height
+            ctx.move(to: CGPoint(x: chartRect.minX, y: y))
+            ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
         }
         ctx.strokePath()
         ctx.restoreGState()
+
+        let font = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        for i in 0...rows {
+            let ratio = Double(i) / Double(rows)
+            let value = maxValue - ratio * (maxValue - minValue)
+            let y = chartRect.minY + CGFloat(ratio) * chartRect.height
+            drawText(
+                config.formatValue(value),
+                at: CGPoint(x: chartRect.maxX + 8, y: y - font.lineHeight / 2),
+                anchorX: 0,
+                font: font,
+                color: palette.gridLabel
+            )
+        }
     }
 
-    private static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], min: Double, max: Double, color: UIColor, fill: UIColor?) {
-        guard points.count >= 2, let last = points.last else { return }
-        let rightEdge = last.time
-        let window = points.last!.time - points.first!.time
-        let effectiveWindow = max(window, 1)
-
-        let path = UIBezierPath()
-        for (index, p) in points.enumerated() {
-            let x = xForTime(p.time, rightEdge: rightEdge, window: effectiveWindow, chartRect: chartRect)
-            let y = yForValue(p.value, min: min, max: max, chartRect: chartRect)
-            if index == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
+    private static func niceTimeInterval(_ windowSecs: TimeInterval) -> TimeInterval {
+        switch windowSecs {
+        case ...15: return 2
+        case ...30: return 5
+        case ...60: return 10
+        case ...120: return 15
+        case ...300: return 30
+        case ...600: return 60
+        case ...1800: return 300
+        case ...3600: return 600
+        case ...14400: return 1800
+        case ...43200: return 3600
+        case ...86400: return 7200
+        case ...604800: return 86400
+        default: return 604800
         }
+    }
 
-        if let fill {
-            let fillPath = path.copy() as! UIBezierPath
-            fillPath.addLine(to: CGPoint(x: chartRect.maxX, y: chartRect.maxY))
-            fillPath.addLine(to: CGPoint(x: chartRect.minX, y: chartRect.maxY))
-            fillPath.close()
-            ctx.setFillColor(fill.cgColor)
-            ctx.addPath(fillPath.cgPath)
-            ctx.fillPath()
-        }
-
-        ctx.setStrokeColor(color.cgColor)
-        ctx.setLineWidth(2)
-        ctx.addPath(path.cgPath)
+    private static func drawTimeAxis(in ctx: CGContext, chartRect: CGRect, now: TimeInterval, window: TimeInterval, palette: LivelinePalette) {
+        ctx.saveGState()
+        ctx.setStrokeColor(palette.grid.cgColor)
+        ctx.setLineWidth(1)
+        ctx.move(to: CGPoint(x: chartRect.minX, y: chartRect.maxY))
+        ctx.addLine(to: CGPoint(x: chartRect.maxX, y: chartRect.maxY))
         ctx.strokePath()
+
+        var interval = niceTimeInterval(window)
+        while chartRect.width * CGFloat(interval / window) < 60 { interval *= 2 }
+
+        let font = UIFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        var t = ((now - window) / interval).rounded(.up) * interval
+        ctx.setStrokeColor(palette.timeLabel.cgColor)
+        while t <= now {
+            let x = xForTime(t, now: now, window: window, chartRect: chartRect)
+            ctx.move(to: CGPoint(x: x, y: chartRect.maxY))
+            ctx.addLine(to: CGPoint(x: x, y: chartRect.maxY + 5))
+            ctx.strokePath()
+            drawText(
+                timeString(t),
+                at: CGPoint(x: x, y: chartRect.maxY + 8),
+                anchorX: 0.5,
+                font: font,
+                color: palette.timeLabel
+            )
+            t += interval
+        }
+        ctx.restoreGState()
     }
 
-    private static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], min: Double, max: Double, palette: LivelinePalette, window: TimeInterval) {
-        guard candles.count > 0, let last = candles.last else { return }
-        let rightEdge = last.time
-        let candleWidth = max(3, chartRect.width / CGFloat(max(candles.count, 1)) * 0.7)
+    // MARK: - Line mode
 
+    private static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], smoothValue: Double, now: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
+        guard !points.isEmpty else { return }
+        let clampY: (CGFloat) -> CGFloat = { clamp($0, chartRect.minY, chartRect.maxY) }
+
+        // Historical points keep their data values; the LAST data point takes
+        // the interpolated value so big jumps animate instead of snapping,
+        // then the live tip is appended at the right edge (matches
+        // src/draw/line.ts).
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(points.count + 1)
+        for (index, p) in points.enumerated() {
+            let x = xForTime(p.time, now: now, window: window, chartRect: chartRect)
+            let v = index == points.count - 1 ? smoothValue : p.value
+            pts.append(CGPoint(x: x, y: clampY(yForValue(v, minValue: minValue, maxValue: maxValue, chartRect: chartRect))))
+        }
+        let tipY = clampY(yForValue(smoothValue, minValue: minValue, maxValue: maxValue, chartRect: chartRect))
+        pts.append(CGPoint(x: chartRect.maxX, y: tipY))
+        guard pts.count >= 2 else { return }
+
+        let linePath = CGMutablePath()
+        linePath.move(to: pts[0])
+        for segment in monotoneSplineSegments(pts) {
+            linePath.addCurve(to: segment.end, control1: segment.control1, control2: segment.control2)
+        }
+
+        ctx.saveGState()
+        ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
+
+        if config.showFill {
+            let fillPath = linePath.mutableCopy()!
+            fillPath.addLine(to: CGPoint(x: pts[pts.count - 1].x, y: chartRect.maxY))
+            fillPath.addLine(to: CGPoint(x: pts[0].x, y: chartRect.maxY))
+            fillPath.closeSubpath()
+
+            ctx.saveGState()
+            ctx.addPath(fillPath)
+            ctx.clip()
+            var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+            var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+            _ = palette.fillTop.getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+            _ = palette.fillBottom.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+            let components: [CGFloat] = [r1, g1, b1, a1, r2, g2, b2, a2]
+            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) {
+                ctx.drawLinearGradient(
+                    gradient,
+                    start: CGPoint(x: 0, y: chartRect.minY),
+                    end: CGPoint(x: 0, y: chartRect.maxY),
+                    options: []
+                )
+            }
+            ctx.restoreGState()
+        }
+
+        ctx.setStrokeColor(palette.line.cgColor)
+        ctx.setLineWidth(CGFloat(config.lineWidth))
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.addPath(linePath)
+        ctx.strokePath()
+        ctx.restoreGState()
+
+        if config.showDashLine {
+            ctx.saveGState()
+            ctx.setStrokeColor(palette.dashLine.cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineDash(phase: 0, lengths: [4, 4])
+            ctx.move(to: CGPoint(x: chartRect.minX, y: tipY))
+            ctx.addLine(to: CGPoint(x: chartRect.maxX, y: tipY))
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
+    }
+
+    /// Live dot: expanding accent pulse ring (1.5s interval, 0.9s duration),
+    /// outer circle with shadow, colored inner dot — port of src/draw/dot.ts.
+    private static func drawDot(in ctx: CGContext, at point: CGPoint, palette: LivelinePalette, pulse: Bool, now: TimeInterval) {
+        if pulse {
+            let t = now.truncatingRemainder(dividingBy: 1.5) / 0.9
+            if t < 1 {
+                let radius = CGFloat(9 + t * 12)
+                ctx.saveGState()
+                ctx.setStrokeColor(palette.line.withAlphaComponent(CGFloat(0.35 * (1 - t))).cgColor)
+                ctx.setLineWidth(1.5)
+                ctx.strokeEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2))
+                ctx.restoreGState()
+            }
+        }
+
+        ctx.saveGState()
+        ctx.setShadow(offset: CGSize(width: 0, height: 1), blur: 6, color: UIColor.black.withAlphaComponent(0.4).cgColor)
+        ctx.setFillColor(palette.dotOuter.cgColor)
+        ctx.fillEllipse(in: CGRect(x: point.x - 6.5, y: point.y - 6.5, width: 13, height: 13))
+        ctx.restoreGState()
+
+        ctx.setFillColor(palette.line.cgColor)
+        ctx.fillEllipse(in: CGRect(x: point.x - 3.5, y: point.y - 3.5, width: 7, height: 7))
+    }
+
+    // MARK: - Candle mode
+
+    private static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], now: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
+        guard !candles.isEmpty else { return }
+        let pxPerSecond = chartRect.width / CGFloat(window)
+        let bodyWidth = Swift.max(1, pxPerSecond * CGFloat(config.candleWidthSeconds) * 0.7)
+        let wickWidth = clamp(bodyWidth * 0.15, 0.8, 2)
+
+        ctx.saveGState()
+        ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
         for c in candles {
-            let x = xForTime(c.time, rightEdge: rightEdge, window: window, chartRect: chartRect)
-            let yOpen = yForValue(c.open, min: min, max: max, chartRect: chartRect)
-            let yClose = yForValue(c.close, min: min, max: max, chartRect: chartRect)
-            let yHigh = yForValue(c.high, min: min, max: max, chartRect: chartRect)
-            let yLow = yForValue(c.low, min: min, max: max, chartRect: chartRect)
+            // Candle time is the bucket's open time — center the body on it
+            let x = xForTime(c.time + config.candleWidthSeconds / 2, now: now, window: window, chartRect: chartRect)
+            let yOpen = yForValue(c.open, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+            let yClose = yForValue(c.close, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+            let yHigh = yForValue(c.high, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+            let yLow = yForValue(c.low, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
 
             let isUp = c.close >= c.open
             let color = isUp ? palette.upCandle : palette.downCandle
 
             ctx.setStrokeColor(color.cgColor)
-            ctx.setLineWidth(1)
+            ctx.setLineWidth(wickWidth)
             ctx.move(to: CGPoint(x: x, y: yHigh))
             ctx.addLine(to: CGPoint(x: x, y: yLow))
             ctx.strokePath()
 
-            let bodyTop = min(yOpen, yClose)
-            let bodyBottom = max(yOpen, yClose)
-            let bodyRect = CGRect(x: x - candleWidth / 2, y: bodyTop, width: candleWidth, height: max(1, bodyBottom - bodyTop))
+            let bodyTop = Swift.min(yOpen, yClose)
+            let bodyBottom = Swift.max(yOpen, yClose)
+            let bodyRect = CGRect(
+                x: x - bodyWidth / 2,
+                y: bodyTop,
+                width: bodyWidth,
+                height: Swift.max(1, bodyBottom - bodyTop)
+            )
             ctx.setFillColor(color.cgColor)
             ctx.fill(bodyRect)
         }
+        ctx.restoreGState()
+
+        // Dashed close-price line at the latest close (candle-colored)
+        if config.showDashLine, let last = candles.last {
+            let y = clamp(
+                yForValue(last.close, minValue: minValue, maxValue: maxValue, chartRect: chartRect),
+                chartRect.minY, chartRect.maxY
+            )
+            let color = last.close >= last.open ? palette.upCandle : palette.downCandle
+            ctx.saveGState()
+            ctx.setStrokeColor(color.withAlphaComponent(0.4).cgColor)
+            ctx.setLineWidth(1)
+            ctx.setLineDash(phase: 0, lengths: [4, 4])
+            ctx.move(to: CGPoint(x: chartRect.minX, y: y))
+            ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
+            ctx.strokePath()
+            ctx.restoreGState()
+        }
     }
 
-    private static func drawCrosshair(in ctx: CGContext, chartRect: CGRect, x: CGFloat, color: UIColor) {
+    // MARK: - Overlays
+
+    private static func drawCrosshair(in ctx: CGContext, chartRect: CGRect, x: CGFloat, points: [LivelinePoint], now: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette) {
         let clampedX = clamp(x, chartRect.minX, chartRect.maxX)
+
         ctx.saveGState()
-        ctx.setStrokeColor(color.cgColor)
+        ctx.setStrokeColor(palette.crosshair.cgColor)
         ctx.setLineWidth(1)
         ctx.move(to: CGPoint(x: clampedX, y: chartRect.minY))
         ctx.addLine(to: CGPoint(x: clampedX, y: chartRect.maxY))
         ctx.strokePath()
         ctx.restoreGState()
+
+        guard !points.isEmpty else { return }
+        let hoverTime = (now - window) + TimeInterval((clampedX - chartRect.minX) / Swift.max(chartRect.width, 1)) * window
+        guard let value = interpolatedValue(points, at: hoverTime) else { return }
+
+        // Marker dot on the line at the hovered value
+        let y = clamp(yForValue(value, minValue: minValue, maxValue: maxValue, chartRect: chartRect), chartRect.minY, chartRect.maxY)
+        ctx.setFillColor(palette.line.cgColor)
+        ctx.fillEllipse(in: CGRect(x: clampedX - 4, y: y - 4, width: 8, height: 8))
+
+        // "VALUE · TIME" inline tooltip near the top, clamped into the chart
+        let font = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        let text = "\(config.formatValue(value))  ·  \(timeString(hoverTime))"
+        let size = textSize(text, font: font)
+        let textX = clamp(clampedX - size.width / 2, chartRect.minX + 4, chartRect.maxX - size.width - 4)
+        drawText(
+            text,
+            at: CGPoint(x: textX, y: chartRect.minY + CGFloat(config.tooltipY) - size.height / 2),
+            anchorX: 0,
+            font: font,
+            color: palette.text
+        )
     }
 
-    private static func drawReferenceLine(in ctx: CGContext, chartRect: CGRect, min: Double, max: Double, value: Double, color: UIColor) {
-        let y = yForValue(value, min: min, max: max, chartRect: chartRect)
+    private static func drawReferenceLine(in ctx: CGContext, chartRect: CGRect, minValue: Double, maxValue: Double, value: Double, color: UIColor) {
+        let y = yForValue(value, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+        guard y >= chartRect.minY - 10, y <= chartRect.maxY + 10 else { return }
         ctx.saveGState()
         ctx.setStrokeColor(color.cgColor)
+        ctx.setLineWidth(1)
         ctx.setLineDash(phase: 0, lengths: [4, 4])
         ctx.move(to: CGPoint(x: chartRect.minX, y: y))
         ctx.addLine(to: CGPoint(x: chartRect.maxX, y: y))
@@ -192,30 +438,91 @@ enum LivelineRenderer {
         ctx.restoreGState()
     }
 
-    private static func drawValueLabel(in ctx: CGContext, rect: CGRect, value: Double, color: UIColor) {
-        let text = String(format: "%.2f", value)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium),
-            .foregroundColor: color
-        ]
-        let attr = NSAttributedString(string: text, attributes: attrs)
-        let size = attr.size()
-        let textRect = CGRect(x: rect.maxX - size.width - 12, y: 8, width: size.width, height: size.height)
-        attr.draw(in: textRect)
+    // MARK: - Loading / empty
+
+    /// Breathing squiggly line, same shape constants as src/draw/loadingShape.ts.
+    private static func drawSquiggly(in ctx: CGContext, chartRect: CGRect, palette: LivelinePalette, now: TimeInterval, alphaScale: Double = 1) {
+        // Keep the sine arguments small for precision — the shape repeats anyway
+        let ms = now.truncatingRemainder(dividingBy: 86_400) * 1000
+        let scroll = ms * 0.001
+        let breath = 0.22 + 0.08 * sin(ms / 1200 * .pi)
+        let amplitude = Double(chartRect.height) * 0.07
+        let centerY = Double(chartRect.midY)
+
+        let samples = 32
+        var pts: [CGPoint] = []
+        pts.reserveCapacity(samples + 1)
+        for i in 0...samples {
+            let t = Double(i) / Double(samples)
+            let y = centerY + amplitude * (
+                sin(t * 9.4 + scroll) * 0.55 +
+                sin(t * 15.7 + scroll * 1.3) * 0.3 +
+                sin(t * 4.2 + scroll * 0.7) * 0.15
+            )
+            pts.append(CGPoint(x: chartRect.minX + CGFloat(t) * chartRect.width, y: CGFloat(y)))
+        }
+
+        let path = CGMutablePath()
+        path.move(to: pts[0])
+        for segment in monotoneSplineSegments(pts) {
+            path.addCurve(to: segment.end, control1: segment.control1, control2: segment.control2)
+        }
+
+        ctx.saveGState()
+        ctx.setStrokeColor(palette.gridLabel.withAlphaComponent(CGFloat(breath * alphaScale)).cgColor)
+        ctx.setLineWidth(2)
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        ctx.addPath(path)
+        ctx.strokePath()
+        ctx.restoreGState()
     }
 
-    private static func drawLoading(in ctx: CGContext, rect: CGRect, palette: LivelinePalette, t: TimeInterval) {
-        let shimmerWidth = rect.width * 0.25
-        let x = ((CGFloat(t).truncatingRemainder(dividingBy: 1.5) / 1.5) * (rect.width + shimmerWidth)) - shimmerWidth
-        let base = UIColor(white: 1, alpha: 0.08)
-        let pulse = UIColor(white: 1, alpha: 0.14)
+    private static func drawEmpty(in ctx: CGContext, chartRect: CGRect, config: LivelineConfig, palette: LivelinePalette, now: TimeInterval) {
+        drawSquiggly(in: ctx, chartRect: chartRect, palette: palette, now: now)
 
-        ctx.setFillColor(base.cgColor)
-        ctx.fill(rect)
-        ctx.setFillColor(pulse.cgColor)
-        ctx.fill(CGRect(x: x, y: 0, width: shimmerWidth, height: rect.height))
+        let font = UIFont.systemFont(ofSize: 12, weight: .regular)
+        let size = textSize(config.emptyText, font: font)
+        // Background-colored gap behind the text, standing in for the
+        // destination-out gradient the web version uses
+        let gap = CGRect(
+            x: chartRect.midX - size.width / 2 - 12,
+            y: chartRect.midY - size.height / 2 - 6,
+            width: size.width + 24,
+            height: size.height + 12
+        )
+        ctx.setFillColor(palette.background.cgColor)
+        ctx.fill(gap)
+        drawText(
+            config.emptyText,
+            at: CGPoint(x: chartRect.midX - size.width / 2, y: chartRect.midY - size.height / 2),
+            anchorX: 0,
+            font: font,
+            color: palette.gridLabel.withAlphaComponent(0.35)
+        )
+    }
 
-        drawValueLabel(in: ctx, rect: rect, value: 0, color: palette.text.withAlphaComponent(0.5))
+    // MARK: - Text helpers
+
+    private static func timeString(_ t: TimeInterval) -> String {
+        let comps = Calendar.current.dateComponents(
+            [.hour, .minute, .second],
+            from: Date(timeIntervalSince1970: t)
+        )
+        return String(format: "%02d:%02d:%02d", comps.hour ?? 0, comps.minute ?? 0, comps.second ?? 0)
+    }
+
+    private static func textSize(_ string: String, font: UIFont) -> CGSize {
+        (string as NSString).size(withAttributes: [.font: font])
+    }
+
+    @discardableResult
+    private static func drawText(_ string: String, at point: CGPoint, anchorX: CGFloat, font: UIFont, color: UIColor) -> CGSize {
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let size = (string as NSString).size(withAttributes: attributes)
+        let origin = CGPoint(x: point.x - size.width * anchorX, y: point.y)
+        (string as NSString).draw(at: origin, withAttributes: attributes)
+        return size
     }
 }
 #endif

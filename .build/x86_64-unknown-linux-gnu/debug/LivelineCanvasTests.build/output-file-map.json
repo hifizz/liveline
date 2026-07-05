@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvasTests.build/master.swiftdeps"
+  },
+  "/home/user/liveline/Tests/LivelineCanvasTests/LivelineCanvasTests.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvasTests.build/LivelineCanvasTests.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvasTests.build/LivelineCanvasTests.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvasTests.build/LivelineCanvasTests~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvasTests.build/LivelineCanvasTests.swiftdeps"
+  }
+}
