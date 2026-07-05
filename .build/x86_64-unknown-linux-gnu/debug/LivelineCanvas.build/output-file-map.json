@@ -1,0 +1,47 @@
+{
+  "": {
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/master.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/Interpolation.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Interpolation.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Interpolation.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Interpolation~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Interpolation.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/LivelineCanvasView.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/LivelineCanvasView.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/LivelineCanvasView.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/LivelineCanvasView~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/LivelineCanvasView.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/Models.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Models.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Models.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Models.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/Palette.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Palette.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Palette.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Palette~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Palette.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/Renderer.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Renderer.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Renderer.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Renderer~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Renderer.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/Spline.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Spline.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Spline.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Spline~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/Spline.swiftdeps"
+  },
+  "/home/user/liveline/Sources/LivelineCanvas/SwiftUIBridge.swift": {
+    "dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/SwiftUIBridge.d",
+    "object": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/SwiftUIBridge.swift.o",
+    "swiftmodule": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/SwiftUIBridge~partial.swiftmodule",
+    "swift-dependencies": "/home/user/liveline/.build/x86_64-unknown-linux-gnu/debug/LivelineCanvas.build/SwiftUIBridge.swiftdeps"
+  }
+}
