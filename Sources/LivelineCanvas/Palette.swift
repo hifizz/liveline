@@ -62,6 +62,19 @@ public struct LivelinePalette: Sendable {
 
     public static let `default` = LivelinePalette()
 
+    /// Default multi-series colors, same values as `SERIES_COLORS` in
+    /// `src/theme.ts` (blue, red, green, amber, violet, pink, cyan, orange).
+    public static let seriesColors: [UIColor] = [
+        UIColor(red: 0x3b / 255, green: 0x82 / 255, blue: 0xf6 / 255, alpha: 1),
+        UIColor(red: 0xef / 255, green: 0x44 / 255, blue: 0x44 / 255, alpha: 1),
+        UIColor(red: 0x22 / 255, green: 0xc5 / 255, blue: 0x5e / 255, alpha: 1),
+        UIColor(red: 0xf5 / 255, green: 0x9e / 255, blue: 0x0b / 255, alpha: 1),
+        UIColor(red: 0x8b / 255, green: 0x5c / 255, blue: 0xf6 / 255, alpha: 1),
+        UIColor(red: 0xec / 255, green: 0x48 / 255, blue: 0x99 / 255, alpha: 1),
+        UIColor(red: 0x06 / 255, green: 0xb6 / 255, blue: 0xd4 / 255, alpha: 1),
+        UIColor(red: 0xf9 / 255, green: 0x73 / 255, blue: 0x16 / 255, alpha: 1),
+    ]
+
     /// Derive a full palette from one accent color + theme, mirroring
     /// `resolveTheme` in `src/theme.ts`. Candle/momentum colors stay
     /// semantic green/red regardless of accent.

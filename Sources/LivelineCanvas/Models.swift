@@ -46,13 +46,21 @@ public struct LivelineInsets: Sendable, Equatable {
     public var right: Double
 
     /// Defaults match the React component's padding: top 12, left 12,
-    /// bottom 28 (time axis room), right 54 (grid label room).
-    public init(top: Double = 12, left: Double = 12, bottom: Double = 28, right: Double = 54) {
+    /// bottom 28 (time axis room), right 80 (badge room; use 54 when the
+    /// badge is off, 12 when the grid is off too).
+    public init(top: Double = 12, left: Double = 12, bottom: Double = 28, right: Double = 80) {
         self.top = top
         self.left = left
         self.bottom = bottom
         self.right = right
     }
+}
+
+public enum LivelineBadgeVariant: Sendable {
+    /// Accent/momentum-colored pill with white text.
+    case `default`
+    /// Neutral background pill with theme text color.
+    case minimal
 }
 
 public struct LivelineConfig: Sendable {
@@ -64,13 +72,23 @@ public struct LivelineConfig: Sendable {
     public var showGrid: Bool
     public var showFill: Bool
     public var showCrosshair: Bool
+    /// Large live value in the top-right corner (React `showValue`).
     public var showValueLabel: Bool
+    /// Color the value label green/red by momentum.
+    public var valueMomentumColor: Bool
     /// Dashed horizontal line at the current value.
     public var showDashLine: Bool
     /// Live dot at the chart tip.
     public var showDot: Bool
     /// Expanding pulse ring on the live dot.
     public var pulse: Bool
+    /// Value pill tracking the chart tip (line mode, single series only).
+    public var showBadge: Bool
+    public var badgeVariant: LivelineBadgeVariant
+    /// Pointed tail on the badge pill.
+    public var badgeTail: Bool
+    /// Momentum styling: dot glow, chevron arrows, badge color.
+    public var momentum: LivelineMomentumMode
     /// Tight Y-range so small moves fill the chart height.
     public var exaggerate: Bool
     public var lineWidth: Double
@@ -88,10 +106,15 @@ public struct LivelineConfig: Sendable {
         showGrid: Bool = true,
         showFill: Bool = true,
         showCrosshair: Bool = true,
-        showValueLabel: Bool = true,
+        showValueLabel: Bool = false,
+        valueMomentumColor: Bool = false,
         showDashLine: Bool = true,
         showDot: Bool = true,
         pulse: Bool = true,
+        showBadge: Bool = true,
+        badgeVariant: LivelineBadgeVariant = .default,
+        badgeTail: Bool = true,
+        momentum: LivelineMomentumMode = .auto,
         exaggerate: Bool = false,
         lineWidth: Double = 2,
         candleWidthSeconds: TimeInterval = 60,
@@ -107,9 +130,14 @@ public struct LivelineConfig: Sendable {
         self.showFill = showFill
         self.showCrosshair = showCrosshair
         self.showValueLabel = showValueLabel
+        self.valueMomentumColor = valueMomentumColor
         self.showDashLine = showDashLine
         self.showDot = showDot
         self.pulse = pulse
+        self.showBadge = showBadge
+        self.badgeVariant = badgeVariant
+        self.badgeTail = badgeTail
+        self.momentum = momentum
         self.exaggerate = exaggerate
         self.lineWidth = lineWidth
         self.candleWidthSeconds = candleWidthSeconds

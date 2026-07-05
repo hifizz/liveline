@@ -35,6 +35,18 @@ public final class LivelineCanvasView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    /// Multi-series mode: when non-empty, overrides `points`/`liveValue`
+    /// and disables badge/momentum/fill, like the React `series` prop.
+    public var series: [LivelineSeries] = [] {
+        didSet { setNeedsDisplay() }
+    }
+
+    /// Series IDs currently hidden (they fade out smoothly). Toggle from
+    /// your own chips UI and the Y-range re-adjusts, as on the web.
+    public var hiddenSeriesIDs: Set<String> = [] {
+        didSet { setNeedsDisplay() }
+    }
+
     public var liveValue: Double = 0 {
         didSet { setNeedsDisplay() }
     }
@@ -125,6 +137,8 @@ public final class LivelineCanvasView: UIView {
                 rect: bounds,
                 points: points,
                 candles: candles,
+                series: series,
+                hiddenSeriesIDs: hiddenSeriesIDs,
                 value: liveValue,
                 config: config,
                 palette: palette,
@@ -166,7 +180,8 @@ public final class LivelineCanvasView: UIView {
     }
 
     private func emitHover(atX x: CGFloat) {
-        guard !points.isEmpty else { return }
+        let hoverData = series.isEmpty ? points : (series.first(where: { !hiddenSeriesIDs.contains($0.id) })?.data ?? [])
+        guard !hoverData.isEmpty else { return }
         let chartRect = bounds.inset(by: UIEdgeInsets(
             top: CGFloat(config.insets.top),
             left: CGFloat(config.insets.left),
@@ -175,13 +190,17 @@ public final class LivelineCanvasView: UIView {
         ))
         guard chartRect.width > 0 else { return }
 
-        // Same time mapping as the renderer: the right edge is "now"
-        // (frozen while paused), not the newest data point.
-        let now = state.pausedAt ?? Date().timeIntervalSince1970
+        // Same time mapping as the renderer: chart clock (wall clock minus
+        // pause debt) plus the small right-edge buffer.
+        let isMulti = !series.isEmpty
+        let showBadge = config.showBadge && config.mode == .line && !isMulti
+        let buffer = showBadge ? 0.05 : 0.015
+        let now = Date().timeIntervalSince1970 - state.timeDebt
+        let rightEdgeTime = now + config.windowSeconds * buffer
         let ratio = clamp((x - chartRect.minX) / chartRect.width, 0, 1)
-        let targetTime = (now - config.windowSeconds) + TimeInterval(ratio) * config.windowSeconds
+        let targetTime = (rightEdgeTime - config.windowSeconds) + TimeInterval(ratio) * config.windowSeconds
 
-        let nearest = points.min { abs($0.time - targetTime) < abs($1.time - targetTime) }
+        let nearest = hoverData.min { abs($0.time - targetTime) < abs($1.time - targetTime) }
         onHover?(nearest)
     }
 }

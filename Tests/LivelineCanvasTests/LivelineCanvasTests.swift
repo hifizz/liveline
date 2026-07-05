@@ -141,4 +141,57 @@ final class LivelineCanvasTests: XCTestCase {
         XCTAssertEqual(segments.count, 1)
         XCTAssertEqual(segments[0].end, pts[1])
     }
+
+    // MARK: - Momentum
+
+    private func momentumPoints(_ values: [Double]) -> [LivelinePoint] {
+        values.enumerated().map { LivelinePoint(time: TimeInterval($0.offset), value: $0.element) }
+    }
+
+    func testMomentumDetectsUp() {
+        let points = momentumPoints([100, 100, 101, 100, 99, 100, 101, 103, 106, 110])
+        XCTAssertEqual(detectMomentum(points: points), .up)
+    }
+
+    func testMomentumDetectsDown() {
+        let points = momentumPoints([110, 110, 109, 110, 111, 110, 108, 105, 102, 100])
+        XCTAssertEqual(detectMomentum(points: points), .down)
+    }
+
+    func testMomentumFlatForSmallMoves() {
+        let points = momentumPoints([100, 110, 100, 110, 100, 105, 105.1, 105, 105.1, 105])
+        XCTAssertEqual(detectMomentum(points: points), .flat)
+    }
+
+    func testMomentumFlatWithTooFewPoints() {
+        XCTAssertEqual(detectMomentum(points: momentumPoints([1, 2, 3])), .flat)
+    }
+
+    // MARK: - Grid interval
+
+    func testGridIntervalGivesReasonableSpacing() {
+        // 100-unit range over 300px → 3 px/unit; labels need >= 36px = 12 units
+        let interval = pickGridInterval(valueRange: 100, pxPerUnit: 3, minGap: 36, previous: 0)
+        XCTAssertGreaterThanOrEqual(interval * 3, 36)
+        XCTAssertLessThanOrEqual(interval * 3, 36 * 2.5 + 0.001)
+    }
+
+    func testGridIntervalHysteresisKeepsPrevious() {
+        // Previous interval still within [0.5×, 4×] of minGap → unchanged
+        let interval = pickGridInterval(valueRange: 100, pxPerUnit: 3, minGap: 36, previous: 20)
+        XCTAssertEqual(interval, 20)
+    }
+
+    func testGridIntervalRepicksWhenSpacingCollapses() {
+        // Previous interval now renders at 6px (< 18px) → must repick
+        let interval = pickGridInterval(valueRange: 1000, pxPerUnit: 0.3, minGap: 36, previous: 20)
+        XCTAssertNotEqual(interval, 20)
+        XCTAssertGreaterThanOrEqual(interval * 0.3, 36)
+    }
+
+    func testIsDivisible() {
+        XCTAssertTrue(isDivisible(100, by: 25))
+        XCTAssertTrue(isDivisible(0.3, by: 0.1))
+        XCTAssertFalse(isDivisible(103, by: 25))
+    }
 }

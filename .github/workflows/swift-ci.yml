@@ -1,0 +1,28 @@
+name: Swift CI
+
+on:
+  push:
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - '.github/workflows/swift-ci.yml'
+  pull_request:
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - '.github/workflows/swift-ci.yml'
+
+jobs:
+  ios-build:
+    name: Build for iOS + test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # The UIKit renderer only compiles on iOS/macCatalyst — swift test on
+      # macOS/Linux skips it entirely, so an iOS build is the real gate.
+      - name: Build (iOS)
+        run: xcodebuild build -scheme LivelineCanvas -destination 'generic/platform=iOS'
+      - name: Unit tests (host)
+        run: swift test
