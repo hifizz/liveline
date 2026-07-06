@@ -16,6 +16,8 @@ public struct LivelineChart: UIViewRepresentable {
     public var referenceLine: LivelineReferenceLine?
     public var loading: Bool
     public var paused: Bool
+    public var lineMode: Bool
+    public var lineData: [LivelinePoint]
     public var onHover: ((LivelinePoint?) -> Void)?
 
     public init(
@@ -31,6 +33,8 @@ public struct LivelineChart: UIViewRepresentable {
         referenceLine: LivelineReferenceLine? = nil,
         loading: Bool = false,
         paused: Bool = false,
+        lineMode: Bool = false,
+        lineData: [LivelinePoint] = [],
         onHover: ((LivelinePoint?) -> Void)? = nil
     ) {
         self.points = points
@@ -45,6 +49,8 @@ public struct LivelineChart: UIViewRepresentable {
         self.referenceLine = referenceLine
         self.loading = loading
         self.paused = paused
+        self.lineMode = lineMode
+        self.lineData = lineData
         self.onHover = onHover
     }
 
@@ -65,6 +71,8 @@ public struct LivelineChart: UIViewRepresentable {
         uiView.referenceLine = referenceLine
         uiView.isLoading = loading
         uiView.isPaused = paused
+        uiView.lineMode = lineMode
+        uiView.lineData = lineData
         uiView.onHover = onHover
     }
 }

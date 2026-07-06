@@ -20,7 +20,15 @@ private final class DisplayLinkProxy: NSObject {
 
 public final class LivelineCanvasView: UIView {
     public var config: LivelineConfig {
-        didSet { setNeedsDisplay() }
+        didSet {
+            // Window changes animate over 750ms with logarithmic
+            // interpolation, like the React window buttons
+            if oldValue.windowSeconds != config.windowSeconds {
+                let now = Date().timeIntervalSince1970
+                windowMorph = (from: effectiveWindow(at: now, previous: oldValue.windowSeconds), start: now)
+            }
+            setNeedsDisplay()
+        }
     }
 
     public var palette: LivelinePalette {
@@ -73,12 +81,38 @@ public final class LivelineCanvasView: UIView {
         didSet { setNeedsDisplay() }
     }
 
+    /// Candle mode: morph the candles into a line display (React `lineMode`).
+    public var lineMode: Bool = false {
+        didSet { setNeedsDisplay() }
+    }
+
+    /// Tick-level data for line-mode density during the morph (React `lineData`).
+    public var lineData: [LivelinePoint] = [] {
+        didSet { setNeedsDisplay() }
+    }
+
     public var onHover: ((LivelinePoint?) -> Void)?
 
     private var displayLink: CADisplayLink?
     private var hoverX: CGFloat?
     private var state = RenderState()
     private var lastTimestamp: CFTimeInterval?
+    private var windowMorph: (from: TimeInterval, start: TimeInterval)?
+
+    /// Window during a change transition: 750ms cosine ease over a
+    /// logarithmic scale (WINDOW_TRANSITION_MS semantics).
+    private func effectiveWindow(at now: TimeInterval, previous: TimeInterval? = nil) -> TimeInterval {
+        guard let morph = windowMorph else { return previous ?? config.windowSeconds }
+        let target = previous ?? config.windowSeconds
+        let progress = (now - morph.start) / 0.75
+        if progress >= 1 {
+            windowMorph = nil
+            return target
+        }
+        let eased = 0.5 - 0.5 * cos(progress * .pi)
+        let from = Swift.max(morph.from, 1)
+        return exp(log(from) + (log(Swift.max(target, 1)) - log(from)) * eased)
+    }
 
     public override init(frame: CGRect) {
         self.config = LivelineConfig()
@@ -158,7 +192,10 @@ public final class LivelineCanvasView: UIView {
                 hoverX: hoverX,
                 isPaused: isPaused,
                 isLoading: isLoading,
-                now: now
+                now: now,
+                window: effectiveWindow(at: now),
+                lineMode: lineMode,
+                lineData: lineData
             ),
             state: &state,
             dt: dt

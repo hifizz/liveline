@@ -90,6 +90,19 @@ public struct LivelineOrderbook: Sendable, Equatable {
     }
 }
 
+/// One time-horizon button for `LivelineWindowBar`.
+public struct LivelineWindowOption: Sendable, Equatable, Identifiable {
+    public let label: String
+    public let seconds: TimeInterval
+
+    public var id: TimeInterval { seconds }
+
+    public init(label: String, seconds: TimeInterval) {
+        self.label = label
+        self.seconds = seconds
+    }
+}
+
 public enum LivelineBadgeVariant: Sendable {
     /// Accent/momentum-colored pill with white text.
     case `default`

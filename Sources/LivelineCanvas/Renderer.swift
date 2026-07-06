@@ -54,6 +54,12 @@ struct RenderState {
     var obPrevBidTotal: Double = 0
     var obPrevAskTotal: Double = 0
     var obChurnRate: Double = 0
+
+    /// Candle↔line morph: 0 = candles, 1 = line (LINE_MORPH_MS = 500, cosine).
+    var lineModeProg: Double = 0
+    var lineMorphTarget: Double = 0
+    var lineMorphFrom: Double = 0
+    var lineMorphStart: TimeInterval = -1
 }
 
 struct RenderInput {
@@ -72,6 +78,13 @@ struct RenderInput {
     let isPaused: Bool
     let isLoading: Bool
     let now: TimeInterval
+    /// Effective visible window — differs from config.windowSeconds while a
+    /// window-change transition is animating.
+    let window: TimeInterval
+    /// Candle mode: morph candles into a line display (React `lineMode`).
+    let lineMode: Bool
+    /// Tick-level data for line-mode density (React `lineData`).
+    let lineData: [LivelinePoint]
 }
 
 enum LivelineRenderer {
@@ -141,7 +154,21 @@ enum LivelineRenderer {
         let now = input.now - state.timeDebt
         let pausedDt = dt * (1 - state.pauseProgress)
 
-        let window = Swift.max(config.windowSeconds, 1)
+        // --- Candle↔line morph progress (timed 500ms cosine ease) ---
+        let lineTarget = input.lineMode ? 1.0 : 0.0
+        if state.lineMorphTarget != lineTarget {
+            state.lineMorphTarget = lineTarget
+            state.lineMorphFrom = state.lineModeProg
+            state.lineMorphStart = input.now
+        }
+        if state.lineModeProg != lineTarget {
+            let progress = state.lineMorphStart < 0 ? 1 : clamp((input.now - state.lineMorphStart) / 0.5, 0, 1)
+            let eased = 0.5 - 0.5 * cos(progress * .pi)
+            state.lineModeProg = state.lineMorphFrom + (lineTarget - state.lineMorphFrom) * eased
+        }
+        let lineProg = config.mode == .candle ? state.lineModeProg : 0
+
+        let window = Swift.max(input.window, 1)
         // Small time buffer past "now" keeps the live dot inside the chart;
         // wider when the badge needs room (WINDOW_BUFFER semantics).
         let showBadge = config.showBadge && config.mode == .line && !isMulti
@@ -165,6 +192,23 @@ enum LivelineRenderer {
         let visiblePoints = isMulti ? [] : visibleSlice(input.points, leftTime: leftTime)
         let visibleCandles = input.candles.filter { $0.time >= leftTime - config.candleWidthSeconds }
 
+        // Line the candles morph into: tick-level data when provided,
+        // otherwise the candle closes
+        let morphLinePoints: [LivelinePoint]
+        if config.mode == .candle, lineProg > 0.001 {
+            if !input.lineData.isEmpty {
+                morphLinePoints = visibleSlice(input.lineData, leftTime: leftTime)
+            } else {
+                var closes = visibleCandles.map { LivelinePoint(time: $0.time + config.candleWidthSeconds / 2, value: $0.close) }
+                if let live = input.liveCandle {
+                    closes.append(LivelinePoint(time: live.time + config.candleWidthSeconds / 2, value: live.close))
+                }
+                morphLinePoints = closes
+            }
+        } else {
+            morphLinePoints = []
+        }
+
         let range: (min: Double, max: Double)
         if isMulti {
             var uMin = Double.infinity
@@ -184,13 +228,29 @@ enum LivelineRenderer {
             range = uMin.isFinite ? (uMin, uMax) : (0, 1)
         } else {
             let rangeCandles = input.liveCandle.map { visibleCandles + [$0] } ?? visibleCandles
-            range = valueRange(
+            let baseRange = valueRange(
                 points: config.mode == .line ? visiblePoints : [],
                 candles: config.mode == .candle ? rangeCandles : [],
                 currentValue: input.value,
                 reference: input.referenceLine,
                 exaggerate: config.exaggerate
             )
+            if config.mode == .candle, lineProg > 0.001, !morphLinePoints.isEmpty {
+                // Blend candle OHLC range into the line range during the morph
+                let lineRange = valueRange(
+                    points: morphLinePoints,
+                    candles: [],
+                    currentValue: input.value,
+                    reference: input.referenceLine,
+                    exaggerate: config.exaggerate
+                )
+                range = (
+                    baseRange.min + (lineRange.min - baseRange.min) * lineProg,
+                    baseRange.max + (lineRange.max - baseRange.max) * lineProg
+                )
+            } else {
+                range = baseRange
+            }
         }
 
         if !state.initialized {
@@ -258,7 +318,18 @@ enum LivelineRenderer {
                     }
                 }
             case .candle:
-                drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, liveCandle: input.liveCandle, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette, state: &state, dt: pausedDt, animNow: input.now)
+                if lineProg < 0.999 {
+                    drawCandles(in: ctx, chartRect: chartRect, candles: visibleCandles, liveCandle: input.liveCandle, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette, state: &state, dt: pausedDt, animNow: input.now, collapse: lineProg, alphaScale: 1 - lineProg)
+                }
+                if lineProg > 0.001, !morphLinePoints.isEmpty {
+                    drawLine(in: ctx, chartRect: chartRect, points: morphLinePoints, smoothValue: state.displayValue, tipTime: now, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette, reveal: reveal, animNow: input.now, alphaScale: lineProg)
+                    if lineProg > 0.5, config.showDot, reveal > 0.5 {
+                        let tipX = xForTime(now, rightEdgeTime: rightEdgeTime, window: window, chartRect: chartRect)
+                        let tipY = yForValue(state.displayValue, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
+                        let dot = CGPoint(x: tipX, y: clamp(tipY, rect.minY + 10, rect.maxY - 10))
+                        drawDot(in: ctx, at: dot, palette: palette, pulse: config.pulse, glow: nil, now: input.now)
+                    }
+                }
             }
         }
 
@@ -275,7 +346,15 @@ enum LivelineRenderer {
             if isMulti {
                 drawMultiCrosshair(in: ctx, chartRect: chartRect, x: hoverX, series: input.series, hidden: input.hiddenSeriesIDs, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
             } else {
-                drawCrosshair(in: ctx, chartRect: chartRect, x: hoverX, points: input.points, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
+                // In candle mode the value tooltip only makes sense once the
+                // morph line carries the values
+                let crosshairPoints: [LivelinePoint]
+                if config.mode == .candle {
+                    crosshairPoints = lineProg > 0.5 ? (input.lineData.isEmpty ? morphLinePoints : input.lineData) : []
+                } else {
+                    crosshairPoints = input.points
+                }
+                drawCrosshair(in: ctx, chartRect: chartRect, x: hoverX, points: crosshairPoints, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, config: config, palette: palette)
             }
         }
 
@@ -500,13 +579,13 @@ enum LivelineRenderer {
         ctx.strokePath()
     }
 
-    static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], smoothValue: Double, tipTime: TimeInterval, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, reveal: Double = 1, animNow: TimeInterval = 0) {
+    static func drawLine(in ctx: CGContext, chartRect: CGRect, points: [LivelinePoint], smoothValue: Double, tipTime: TimeInterval, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, reveal: Double = 1, animNow: TimeInterval = 0, alphaScale: Double = 1) {
         var pts = linePoints(points, smoothValue: smoothValue, tipTime: tipTime, rightEdgeTime: rightEdgeTime, window: window, minValue: minValue, maxValue: maxValue, chartRect: chartRect)
         guard pts.count >= 2 else { return }
 
         let ms = animNow.truncatingRemainder(dividingBy: 86_400) * 1000
-        var lineAlpha = 1.0
-        var fillAlpha = 1.0
+        var lineAlpha = alphaScale
+        var fillAlpha = alphaScale
         var strokeColor = palette.line
 
         if reveal < 1 {
@@ -529,8 +608,8 @@ enum LivelineRenderer {
             // Line shares the loading breath at reveal=0, ramps to full;
             // color blends grey → accent by reveal ≈ 0.3
             let breath = 0.22 + 0.08 * sin(ms / 1200 * .pi)
-            lineAlpha = breath + (1 - breath) * reveal
-            fillAlpha = reveal
+            lineAlpha = (breath + (1 - breath) * reveal) * alphaScale
+            fillAlpha = reveal * alphaScale
             strokeColor = blendColor(palette.gridLabel, palette.line, t: Swift.min(1, reveal * 3))
         }
 
@@ -580,7 +659,7 @@ enum LivelineRenderer {
             // During reveal the dash line unfolds from the vertical center
             let y = reveal < 1 ? chartRect.midY + (realY - chartRect.midY) * CGFloat(reveal) : realY
             ctx.saveGState()
-            ctx.setStrokeColor(scaledAlpha(palette.dashLine, reveal).cgColor)
+            ctx.setStrokeColor(scaledAlpha(palette.dashLine, reveal * alphaScale).cgColor)
             ctx.setLineWidth(1)
             ctx.setLineDash(phase: 0, lengths: [4, 4])
             ctx.move(to: CGPoint(x: chartRect.minX, y: y))
@@ -672,11 +751,24 @@ enum LivelineRenderer {
 
     // MARK: - Candle mode
 
-    static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], liveCandle: CandlePoint?, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, state: inout RenderState, dt: Double, animNow: TimeInterval) {
+    static func drawCandles(in ctx: CGContext, chartRect: CGRect, candles: [CandlePoint], liveCandle: CandlePoint?, rightEdgeTime: TimeInterval, window: TimeInterval, minValue: Double, maxValue: Double, config: LivelineConfig, palette: LivelinePalette, state: inout RenderState, dt: Double, animNow: TimeInterval, collapse: Double = 0, alphaScale: Double = 1) {
         guard !candles.isEmpty || liveCandle != nil else { return }
         let pxPerSecond = chartRect.width / CGFloat(window)
         let bodyWidth = Swift.max(1, pxPerSecond * CGFloat(config.candleWidthSeconds) * 0.7)
         let wickWidth = clamp(bodyWidth * 0.15, 0.8, 2)
+
+        // During the line morph, OHLC collapses toward the close price
+        func collapsed(_ c: CandlePoint) -> CandlePoint {
+            guard collapse > 0 else { return c }
+            let k = 1 - collapse
+            return CandlePoint(
+                time: c.time,
+                open: c.close + (c.open - c.close) * k,
+                high: c.close + (c.high - c.close) * k,
+                low: c.close + (c.low - c.close) * k,
+                close: c.close
+            )
+        }
 
         func drawCandle(_ c: CandlePoint, at time: TimeInterval, alpha: Double) {
             let x = xForTime(time + config.candleWidthSeconds / 2, rightEdgeTime: rightEdgeTime, window: window, chartRect: chartRect)
@@ -710,7 +802,7 @@ enum LivelineRenderer {
         ctx.clip(to: chartRect.insetBy(dx: -1, dy: 0))
         // Candle time is the bucket's open time — bodies are centered on it
         for c in candles {
-            drawCandle(c, at: c.time, alpha: 1)
+            drawCandle(collapsed(c), at: c.time, alpha: alphaScale)
         }
 
         // Live candle: birth fade-in, lerped OHLC, pulsing glow
@@ -731,12 +823,12 @@ enum LivelineRenderer {
 
             let display = CandlePoint(time: live.time, open: smooth.open, high: smooth.high, low: smooth.low, close: smooth.close)
             let ms = animNow.truncatingRemainder(dividingBy: 86_400) * 1000
-            let glowAlpha = 0.12 + sin(ms * 0.004) * 0.08
+            let glowAlpha = (0.12 + sin(ms * 0.004) * 0.08) * alphaScale
             let glowBase = display.close >= display.open ? palette.upCandle : palette.downCandle
 
             ctx.saveGState()
             ctx.setShadow(offset: .zero, blur: 8, color: glowBase.withAlphaComponent(CGFloat(Swift.max(0, glowAlpha))).cgColor)
-            drawCandle(display, at: live.time, alpha: state.liveCandleAlpha)
+            drawCandle(collapsed(display), at: live.time, alpha: state.liveCandleAlpha * alphaScale)
             ctx.restoreGState()
 
             closeSource = display
@@ -753,7 +845,7 @@ enum LivelineRenderer {
             )
             let color = source.close >= source.open ? palette.upCandle : palette.downCandle
             ctx.saveGState()
-            ctx.setStrokeColor(color.withAlphaComponent(0.4).cgColor)
+            ctx.setStrokeColor(color.withAlphaComponent(CGFloat(0.4 * alphaScale)).cgColor)
             ctx.setLineWidth(1)
             ctx.setLineDash(phase: 0, lengths: [4, 4])
             ctx.move(to: CGPoint(x: chartRect.minX, y: y))
