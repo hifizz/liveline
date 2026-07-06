@@ -637,7 +637,7 @@ enum LivelineRenderer {
                 r1, g1, b1, a1 * CGFloat(fillAlpha),
                 r2, g2, b2, a2 * CGFloat(fillAlpha)
             ]
-            if let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) {
+            if let gradient = CGGradient(colorSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) {
                 ctx.drawLinearGradient(
                     gradient,
                     start: CGPoint(x: 0, y: chartRect.minY),
@@ -675,7 +675,7 @@ enum LivelineRenderer {
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         _ = background.getRed(&r, green: &g, blue: &b, alpha: &a)
         let components: [CGFloat] = [r, g, b, 1, r, g, b, 0]
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) else { return }
+        guard let gradient = CGGradient(colorSpace: CGColorSpaceCreateDeviceRGB(), colorComponents: components, locations: [0, 1], count: 2) else { return }
         ctx.saveGState()
         ctx.clip(to: CGRect(x: chartRect.minX, y: chartRect.minY, width: 40, height: chartRect.height))
         ctx.drawLinearGradient(
